@@ -6,6 +6,11 @@ import subprocess
 import pandas as pd
 import os
 import numpy as np
+from numpy.testing import assert_array_almost_equal
+
+
+element_dir = "postProcessing/actuatorLineElements/0/"
+al_dir = "postProcessing/actuatorLines/0/"
 
 
 def setup():
@@ -17,6 +22,17 @@ def check_created():
     """Test that axialFlowTurbineALSource was created."""
     txt = "Selecting finite volume options model type axialFlowTurbineALSource"
     subprocess.check_output(["grep", txt, "log.pimpleFoam"])
+
+
+def check_al_file_exists():
+    """Test that the actuator line perf file was created."""
+    assert os.path.isfile(os.path.join(al_dir, "turbine.blade1.csv"))
+
+
+def check_element_file_exists():
+    """Test that the element perf file was created."""
+    assert os.path.isfile(os.path.join(element_dir,
+                                       "turbine.blade1.element0.csv"))
 
 
 def check_perf(angle0=540.0):
@@ -38,6 +54,54 @@ def check_perf(angle0=540.0):
     assert 0.5 < mean_cd < 1.0
 
 
+def check_periodic_tsr():
+    """Check that the periodic TSR oscillation was set properly."""
+    df = pd.read_csv("postProcessing/turbines/0/turbine.csv")
+    df = df.drop_duplicates("time", keep="last")
+    theta_rad = np.deg2rad(df.angle_deg)
+    tsr_amp = 0.0
+    tsr_phase = 0.0
+    tsr_mean = df.tsr.mean()
+    nblades = 3
+    tsr_ref = tsr_amp*np.cos(nblades*(theta_rad - tsr_phase)) + tsr_mean
+    assert_array_almost_equal(df.tsr, tsr_ref)
+
+
+def check_end_effects():
+    """Check that end effects taper off properly."""
+    elements_dir = "postProcessing/actuatorLineElements/0"
+    elements = os.listdir(elements_dir)
+    dfs = {}
+    urel = np.zeros(len(elements))
+    alpha_deg = np.zeros(len(elements))
+    cl = np.zeros(len(elements))
+    f = np.zeros(len(elements))
+    root_dist = np.zeros(len(elements))
+    for e in elements:
+        i = int(e.replace("turbine.blade1.element", "").replace(".csv", ""))
+        df = pd.read_csv(os.path.join(elements_dir, e))
+        root_dist[i] = df.root_dist.iloc[-1]
+        urel[i] = df.rel_vel_mag.iloc[-1]
+        alpha_deg[i] = df.alpha_deg.iloc[-1]
+        f[i] = df.end_effect_factor.iloc[-1]
+        cl[i] = df.cl.iloc[-1]
+    print("End effect factor at tip:", f[-1])
+    assert 0 < f[-1] < 0.5
+    assert cl[-1] < 0.6
+    assert np.all(root_dist >= 0.0)
+    assert np.all(root_dist <= 1.0)
+
+
+def all_checks():
+    """All checks to run after simulation."""
+    check_created()
+    check_al_file_exists()
+    check_element_file_exists()
+    check_perf()
+    check_periodic_tsr()
+    check_end_effects()
+
+
 def test_serial():
     """Test axialFlowTurbineALSource in serial."""
     output_clean = subprocess.check_output("./Allclean")
@@ -47,8 +111,7 @@ def test_serial():
         print(subprocess.check_output(["tail", "-n", "200",
                                        "log.pimpleFoam"]).decode())
         assert False
-    check_created()
-    check_perf()
+    all_checks()
     log_end = subprocess.check_output(["tail", "log.pimpleFoam"]).decode()
     print(log_end)
     assert log_end.split()[-1] == "End"
@@ -63,8 +126,7 @@ def test_parallel():
         print(subprocess.check_output(["tail", "-n", "200",
                                        "log.pimpleFoam"]).decode())
         assert False
-    check_created()
-    check_perf()
+    all_checks()
     log_end = subprocess.check_output(["tail", "log.pimpleFoam"]).decode()
     print(log_end)
     assert "Finalising parallel run" in log_end

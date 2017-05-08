@@ -69,7 +69,7 @@ protected:
         //- Coefficients dictionary
         const dictionary dict_;
 
-        //- Name of profile model
+        //- Name of element
         const word name_;
 
         //- Reference to the mesh
@@ -276,35 +276,41 @@ public:
             //- Return the element chord length
             const scalar& chordLength() const;
 
+            //- Return the element span length
+            const scalar& spanLength();
+
             //- Return the element location
-            vector& position();
+            const vector& position();
+
+            //- Return the element velocity
+            const vector& velocity();
 
             //- Return force vector from element
-            vector& force();
+            const vector& force();
 
             //- Return relative velocity
-            vector& relativeVelocity();
+            const vector& relativeVelocity();
 
             //- Return geometric relative velocity
-            vector& relativeVelocityGeom();
+            const vector& relativeVelocityGeom();
 
             //- Return element angle of attack in degrees
-            scalar& angleOfAttack();
+            const scalar& angleOfAttack();
 
             //- Return element geometric angle of attack in degrees
-            scalar& angleOfAttackGeom();
+            const scalar& angleOfAttackGeom();
 
             //- Return lift coefficient
-            scalar& liftCoefficient();
+            const scalar& liftCoefficient();
 
             //- Return drag coefficient
-            scalar& dragCoefficient();
+            const scalar& dragCoefficient();
 
             //- Return moment coefficient
-            scalar& momentCoefficient();
+            const scalar& momentCoefficient();
 
             //- Return nondimensional distance from actuator line root
-            scalar& rootDistance();
+            const scalar& rootDistance();
 
 
         // Manipulation

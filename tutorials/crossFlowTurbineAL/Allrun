@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 cd ${0%/*} || exit 1    # run from this directory
 
 # Source tutorial run functions
@@ -13,11 +13,16 @@ runApplication topoSet
 
 if [ "$1" = "-parallel" ]
     then
-    nProc=$(getNumberOfProcessors)
+    if [[ $WM_PROJECT_VERSION == "3."* ]]
+        then
+        nProc=$(getNumberOfProcessors)
+    else
+        nProc=""
+    fi
     runApplication decomposePar
     ls -d processor* | xargs -I {} rm -rf ./{}/0
     ls -d processor* | xargs -I {} cp -r 0.org ./{}/0
-    runParallel pimpleFoam  $nProc
+    runParallel pimpleFoam $nProc
     runApplication reconstructPar
 else
     runApplication pimpleFoam

@@ -26,6 +26,7 @@ License
 #include "LeishmanBeddoes.H"
 #include "addToRunTimeSelectionTable.H"
 #include "simpleMatrix.H"
+#include "interpolateUtils.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -58,7 +59,10 @@ Foam::List<scalar> Foam::fv::LeishmanBeddoes::cnToF
 
     forAll(cnList, i)
     {
-        if (alphaRadList[i] == 0.0) alphaRadList[i] = SMALL;
+        if (alphaRadList[i] == 0.0)
+        {
+            alphaRadList[i] = SMALL;
+        }
         fList[i] = magSqr
         (
             2*Foam::sqrt(mag(cnList[i]) /
@@ -67,8 +71,14 @@ Foam::List<scalar> Foam::fv::LeishmanBeddoes::cnToF
         );
         if (limit)
         {
-            if (fList[i] >= 1) fList[i] = 1.0 - SMALL;
-            if (fList[i] <= 0) fList[i] = SMALL;
+            if (fList[i] >= 1)
+            {
+                fList[i] = 1.0 - SMALL;
+            }
+            if (fList[i] <= 0)
+            {
+                fList[i] = SMALL;
+            }
         }
     }
     return fList;
@@ -89,16 +99,44 @@ void Foam::fv::LeishmanBeddoes::calcAlphaEquiv()
 void Foam::fv::LeishmanBeddoes::evalStaticData()
 {
     // Get static stall angle in radians
-    alphaSS_ = profileData_.staticStallAngleRad();
+    if (coeffs_.found("alphaSSList"))
+    {
+        alphaSS_ = interpolateStaticParam("alphaSS");
+    }
+    else
+    {
+        alphaSS_ = profileData_.staticStallAngleRad();
+    }
 
     // Get normal coefficient slope CNAlpha
-    CNAlpha_ = profileData_.normalCoeffSlope();
+    if (coeffs_.found("CNAlphaList"))
+    {
+        CNAlpha_ = interpolateStaticParam("CNAlpha");
+    }
+    else
+    {
+        CNAlpha_ = profileData_.normalCoeffSlope();
+    }
 
     // Calculate CN1 using normal coefficient slope and critical f value
     // alpha1 is 87% of the static stall angle
     scalar f = fCrit_;
-    alpha1_ = alphaSS_*0.87;
-    CN1_ = CNAlpha_*alpha1_*pow((1.0 + sqrt(f))/2.0, 2);
+    if (coeffs_.found("alpha1List"))
+    {
+        alpha1_ = interpolateStaticParam("alpha1");
+    }
+    else
+    {
+        alpha1_ = alphaSS_*0.87;
+    }
+    if (coeffs_.found("CN1List"))
+    {
+        CN1_ = interpolateStaticParam("CN1");
+    }
+    else
+    {
+        CN1_ = CNAlpha_*alpha1_*pow((1.0 + sqrt(f))/2.0, 2);
+    }
 
     if (debug)
     {
@@ -111,8 +149,14 @@ void Foam::fv::LeishmanBeddoes::evalStaticData()
     }
 
     // Get CD0
-    CD0_ = profileData_.zeroLiftDragCoeff();
-
+    if (coeffs_.found("CD0List"))
+    {
+        CD0_ = interpolateStaticParam("CD0");
+    }
+    else
+    {
+        CD0_ = profileData_.zeroLiftDragCoeff();
+    }
     if (debug)
     {
         Info<< "    Cd_0: " << CD0_ << endl;
@@ -120,10 +164,43 @@ void Foam::fv::LeishmanBeddoes::evalStaticData()
     }
 
     // Calculate S1 and S2 constants for the separation point curve
-    calcS1S2();
+    if (coeffs_.found("S1List") and coeffs_.found("S2List"))
+    {
+        S1_ = interpolateStaticParam("S1");
+        S2_ = interpolateStaticParam("S2");
+    }
+    else
+    {
+        calcS1S2();
+    }
 
     // Calculate the K1 and K2 constants for the moment coefficient
-    calcK1K2();
+    if (coeffs_.found("K1List") and coeffs_.found("K2List"))
+    {
+        K1_ = interpolateStaticParam("K1");
+        K2_ = interpolateStaticParam("K2");
+    }
+    else
+    {
+        calcK1K2();
+    }
+}
+
+
+scalar Foam::fv::LeishmanBeddoes::interpolateStaticParam(word paramName)
+{
+    scalar Re = profileData_.Re();
+    List<scalar> ReList = coeffs_.lookup("ReList");
+    label interpIndex = interpolateUtils::binarySearch(ReList, Re);
+    scalar interpFraction = interpolateUtils::getPart(Re, ReList, interpIndex);
+    List<scalar> paramList = coeffs_.lookup(paramName + "List");
+
+    return interpolateUtils::interpolate1D
+    (
+        interpFraction,
+        paramList,
+        interpIndex
+    );
 }
 
 
@@ -260,8 +337,14 @@ void Foam::fv::LeishmanBeddoes::calcSeparated()
 
     // Modify Tf time constant if necessary
     scalar Tf = Tf_;
-    if (tau_ > 0 and tau_ <= Tvl_) Tf = 0.5*Tf_;
-    else if (tau_ > Tvl_ and tau_ <= 2.0*Tvl_) Tf = 4.0*Tf_;
+    if (tau_ > 0 and tau_ <= Tvl_)
+    {
+        Tf = 0.5*Tf_;
+    }
+    else if (tau_ > Tvl_ and tau_ <= 2.0*Tvl_)
+    {
+        Tf = 4.0*Tf_;
+    }
     if (mag(alpha_) < mag(alphaPrev_) and mag(CNPrime_) < CN1_)
     {
         Tf = 0.5*Tf_;
@@ -302,7 +385,10 @@ void Foam::fv::LeishmanBeddoes::calcSeparated()
 
     // Compute vortex shedding process if stalled
     // Evaluate vortex tracking time
-    if (not stalledPrev_) tau_ = 0.0;
+    if (not stalledPrev_)
+    {
+        tau_ = 0.0;
+    }
     else
     {
         if (tau_ == tauPrev_)
@@ -314,7 +400,10 @@ void Foam::fv::LeishmanBeddoes::calcSeparated()
     // Calculate Strouhal number time constant and set tau to zero to
     // allow multiple vortex shedding
     scalar Tst = 2.0*(1.0 - fDoublePrime_)/0.19;
-    if (tau_ > (Tvl_ + Tst)) tau_ = 0.0;
+    if (tau_ > (Tvl_ + Tst))
+    {
+        tau_ = 0.0;
+    }
 
     // Evaluate vortex lift contributions, which are only increasing if angle
     // of attack increased in magnitude beyond a threshold
@@ -322,7 +411,10 @@ void Foam::fv::LeishmanBeddoes::calcSeparated()
     if (tau_ < Tvl_ and (mag(alpha_) > mag(alphaPrev_)))
     {
         // Halve Tv if dAlpha/dt changes sign
-        if (sign(deltaAlpha_) != sign(deltaAlphaPrev_)) Tv = 0.5*Tv_;
+        if (sign(deltaAlpha_) != sign(deltaAlphaPrev_))
+        {
+            Tv = 0.5*Tv_;
+        }
         scalar KN = magSqr((1.0 + sqrt(fDoublePrime_)))/4.0;
         CV_ = CNC_*(1.0 - KN);
         CNV_ = CNVPrev_*exp(-deltaS_/Tv)
@@ -432,7 +524,8 @@ Foam::fv::LeishmanBeddoes::LeishmanBeddoes
     K1_(0.0),
     K2_(0.0),
     cmFitExponent_(coeffs_.lookupOrDefault("cmFitExponent", 2)),
-    CM_(0.0)
+    CM_(0.0),
+    Re_(0.0)
 {
     dict_.lookup("chordLength") >> c_;
 
@@ -509,10 +602,18 @@ void Foam::fv::LeishmanBeddoes::correct
         Info<< "    Initial moment coefficient: " << cm << endl;
     }
 
-    calcAlphaEquiv();
+    bool doCalcAlphaEquiv = coeffs_.lookupOrDefault("calcAlphaEquiv", false);
+    if (doCalcAlphaEquiv)
+    {
+        calcAlphaEquiv();
+    }
+    else
+    {
+        alphaEquiv_ = alpha_;
+    }
     // Evaluate static coefficient data if it has changed, e.g., from a
     // Reynolds number correction
-    if (CD0_ != profileData_.zeroLiftDragCoeff())
+    if (profileData_.staticStallAngleRad() != alphaSS_)
     {
         evalStaticData();
     }

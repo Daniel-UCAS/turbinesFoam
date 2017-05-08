@@ -79,7 +79,7 @@ void Foam::fv::axialFlowTurbineALSource::createBlades()
 
     for (int i = 0; i < nBlades_; i++)
     {
-        word& bladeName = bladeNames_[i];
+        word bladeName = bladeNames_[i];
         // Create dictionary items for this blade
         dictionary bladeSubDict = bladesDict_.subDict(bladeName);
         bladeSubDict.lookup("nElements") >> nElements;
@@ -93,6 +93,22 @@ void Foam::fv::axialFlowTurbineALSource::createBlades()
         bladeSubDict.add("freeStreamVelocity", freeStreamVelocity_);
         bladeSubDict.add("fieldNames", coeffs_.lookup("fieldNames"));
         bladeSubDict.add("profileData", profileData_);
+
+        // Disable individual lifting line end effects model if rotor-level
+        // end effects model is active
+        if
+        (
+            bladeSubDict.found("endEffects")
+            and endEffectsActive_
+            and endEffectsModel_ != "liftingLine"
+        )
+        {
+            bladeSubDict.set("endEffects", false);
+        }
+        else if (endEffectsModel_ == "liftingLine" and endEffectsActive_)
+        {
+            bladeSubDict.add("endEffects", true);
+        }
 
         if (debug)
         {
@@ -209,6 +225,9 @@ void Foam::fv::axialFlowTurbineALSource::createBlades()
         bladeSubDict.add("selectionMode", coeffs_.lookup("selectionMode"));
         bladeSubDict.add("cellSet", coeffs_.lookup("cellSet"));
 
+        // Do not write force from individual actuator line unless specified
+        bladeSubDict.lookupOrAddDefault("writeForceField", false);
+
         dictionary dict;
         dict.add("actuatorLineSourceCoeffs", bladeSubDict);
         dict.add("type", "actuatorLineSource");
@@ -216,7 +235,7 @@ void Foam::fv::axialFlowTurbineALSource::createBlades()
 
         actuatorLineSource* blade = new actuatorLineSource
         (
-            bladeName,
+            name_ + "." + bladeName,
             modelType,
             dict,
             mesh_
@@ -301,6 +320,9 @@ void Foam::fv::axialFlowTurbineALSource::createHub()
     hubSubDict.add("selectionMode", coeffs_.lookup("selectionMode"));
     hubSubDict.add("cellSet", coeffs_.lookup("cellSet"));
 
+    // Do not write force from individual actuator line unless specified
+    hubSubDict.lookupOrAddDefault("writeForceField", false);
+
     dictionary dict;
     dict.add("actuatorLineSourceCoeffs", hubSubDict);
     dict.add("type", "actuatorLineSource");
@@ -308,7 +330,7 @@ void Foam::fv::axialFlowTurbineALSource::createHub()
 
     actuatorLineSource* hub = new actuatorLineSource
     (
-        "hub",
+        name_ + ".hub",
         "actuatorLineSource",
         dict,
         mesh_
@@ -386,6 +408,9 @@ void Foam::fv::axialFlowTurbineALSource::createTower()
     towerSubDict.add("selectionMode", coeffs_.lookup("selectionMode"));
     towerSubDict.add("cellSet", coeffs_.lookup("cellSet"));
 
+    // Do not write force from individual actuator line unless specified
+    towerSubDict.lookupOrAddDefault("writeForceField", false);
+
     dictionary dict;
     dict.add("actuatorLineSourceCoeffs", towerSubDict);
     dict.add("type", "actuatorLineSource");
@@ -393,7 +418,7 @@ void Foam::fv::axialFlowTurbineALSource::createTower()
 
     actuatorLineSource* tower = new actuatorLineSource
     (
-        "tower",
+        name_ + ".tower",
         "actuatorLineSource",
         dict,
         mesh_
@@ -406,6 +431,93 @@ void Foam::fv::axialFlowTurbineALSource::createTower()
 void Foam::fv::axialFlowTurbineALSource::createNacelle()
 {
     // Do nothing
+}
+
+
+void Foam::fv::axialFlowTurbineALSource::calcEndEffects()
+{
+    if (debug)
+    {
+        Info<< "Calculating end effects for " << name_ << endl;
+    }
+    // Calculate rotor-level end effects correction
+    scalar pi = Foam::constant::mathematical::pi;
+    forAll(blades_, i)
+    {
+        forAll(blades_[i].elements(), j)
+        {
+            scalar rootDist = blades_[i].elements()[j].rootDistance();
+            vector relVel = blades_[i].elements()[j].relativeVelocity();
+            if (debug)
+            {
+                Info<< "    rootDist: " << rootDist << endl;
+                Info<< "    relVel: " << relVel << endl;
+            }
+            // Calculate angle between rotor plane and relative velocity
+            scalar phi = pi/2.0;
+            if (mag(relVel) > VSMALL)
+            {
+                phi = asin((-axis_ & relVel)/(mag(axis_)*mag(relVel)));
+            }
+            if (debug)
+            {
+                scalar phiDeg = Foam::radToDeg(phi);
+                Info<< "    phi (degrees): " << phiDeg << endl;
+            }
+            // Calculate end effect factor for this element
+            scalar f = 1.0;
+            dictionary endEffectsCoeffs = endEffectsDict_.subOrEmptyDict
+            (
+                endEffectsModel_ + "Coeffs"
+            );
+            if (endEffectsModel_ == "Glauert")
+            {
+                if (endEffectsCoeffs.lookupOrDefault("tipEffects", true))
+                {
+                    f = 2.0/pi*acos(Foam::exp
+                    (
+                        -nBlades_/2.0*(1.0/rootDist - 1)/sin(phi))
+                    );
+                }
+                if (endEffectsCoeffs.lookupOrDefault("rootEffects", false))
+                {
+                    scalar tipDist = 1.0 - rootDist;
+                    f *= 2.0/pi*acos(Foam::exp
+                    (
+                        -nBlades_/2.0*(1.0/tipDist - 1)/sin(phi))
+                    );
+                }
+            }
+            else if (endEffectsModel_ == "Shen")
+            {
+                scalar c1;
+                endEffectsCoeffs.lookup("c1") >> c1;
+                scalar c2;
+                endEffectsCoeffs.lookup("c2") >> c2;
+                scalar g = Foam::exp(-c1*(nBlades_*tipSpeedRatio_ - c2)) + 0.1;
+                if (endEffectsCoeffs.lookupOrDefault("tipEffects", true))
+                {
+                    f = 2.0/pi*acos(Foam::exp
+                    (
+                        -g*nBlades_/2.0*(1.0/rootDist - 1)/sin(phi))
+                    );
+                }
+                if (endEffectsCoeffs.lookupOrDefault("rootEffects", false))
+                {
+                    scalar tipDist = 1.0 - rootDist;
+                    f *= 2.0/pi*acos(Foam::exp
+                    (
+                        -g*nBlades_/2.0*(1.0/tipDist - 1)/sin(phi))
+                    );
+                }
+            }
+            if (debug)
+            {
+                Info<< "    f: " << f << endl;
+            }
+            blades_[i].elements()[j].setEndEffectFactor(f);
+        }
+    }
 }
 
 
@@ -431,9 +543,18 @@ Foam::fv::axialFlowTurbineALSource::axialFlowTurbineALSource
     read(dict);
     createCoordinateSystem();
     createBlades();
-    if (hasHub_) createHub();
-    if (hasTower_) createTower();
-    if (hasNacelle_) createNacelle();
+    if (hasHub_)
+    {
+        createHub();
+    }
+    if (hasTower_)
+    {
+        createTower();
+    }
+    if (hasNacelle_)
+    {
+        createNacelle();
+    }
     createOutputFile();
 
     // Rotate turbine to azimuthalOffset if necessary
@@ -455,22 +576,6 @@ Foam::fv::axialFlowTurbineALSource::~axialFlowTurbineALSource()
 
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
-
-void Foam::fv::axialFlowTurbineALSource::rotate()
-{
-    // Update tip speed ratio and omega
-    scalar t = time_.value();
-    tipSpeedRatio_ = meanTSR_ + tsrAmplitude_
-                   *cos(nBlades_/rotorRadius_*(meanTSR_*t - tsrPhase_));
-    omega_ = tipSpeedRatio_*mag(freeStreamVelocity_)/rotorRadius_;
-
-    scalar deltaT = time_.deltaT().value();
-    scalar radians = omega_*deltaT;
-    rotate(radians);
-    angleDeg_ += radToDeg(radians);
-    lastRotationTime_ = time_.value();
-}
-
 
 void Foam::fv::axialFlowTurbineALSource::rotate(scalar radians)
 {
@@ -513,6 +618,12 @@ void Foam::fv::axialFlowTurbineALSource::addSup
     // Create local moment vector
     vector moment(vector::zero);
 
+    if (endEffectsActive_ and endEffectsModel_ != "liftingLine")
+    {
+        // Calculate end effects based on current velocity field
+        calcEndEffects();
+    }
+
     // Add source for blade actuator lines
     forAll(blades_, i)
     {
@@ -536,7 +647,10 @@ void Foam::fv::axialFlowTurbineALSource::addSup
         // Add source for tower actuator line
         tower_->addSup(eqn, fieldI);
         forceField_ += tower_->forceField();
-        if (includeTowerDrag_) force_ += tower_->force();
+        if (includeTowerDrag_)
+        {
+            force_ += tower_->force();
+        }
     }
 
     if (hasNacelle_)
@@ -544,15 +658,14 @@ void Foam::fv::axialFlowTurbineALSource::addSup
         // Add source for tower actuator line
         nacelle_->addSup(eqn, fieldI);
         forceField_ += nacelle_->forceField();
-        if (includeNacelleDrag_) force_ += nacelle_->force();
+        if (includeNacelleDrag_)
+        {
+            force_ += nacelle_->force();
+        }
     }
 
     // Torque is the projection of the moment from all blades on the axis
     torque_ = moment & axis_;
-    Info<< "Azimuthal angle (degrees) of " << name_ << ": " << angleDeg_
-        << endl;
-    Info<< "Torque (per unit density) from " << name_ << ": " << torque_
-        << endl;
 
     torqueCoefficient_ = torque_/(0.5*frontalArea_*rotorRadius_
                        * magSqr(freeStreamVelocity_));
@@ -560,12 +673,15 @@ void Foam::fv::axialFlowTurbineALSource::addSup
     dragCoefficient_ = force_ & freeStreamDirection_
                      / (0.5*frontalArea_*magSqr(freeStreamVelocity_));
 
-    Info<< "Power coefficient from " << name_ << ": " << powerCoefficient_
-        << endl << endl;
+    // Print performance to terminal
+    printPerf();
 
     // Write performance data -- note this will write multiples if there are
     // multiple PIMPLE loops
-    if (Pstream::master()) writePerf();
+    if (Pstream::master())
+    {
+        writePerf();
+    }
 }
 
 
@@ -588,6 +704,12 @@ void Foam::fv::axialFlowTurbineALSource::addSup
 
     // Create local moment vector
     vector moment(vector::zero);
+
+    if (endEffectsActive_ and endEffectsModel_ != "liftingLine")
+    {
+        // Calculate end effects based on current velocity field
+        calcEndEffects();
+    }
 
     // Add source for blade actuator lines
     forAll(blades_, i)
@@ -612,7 +734,10 @@ void Foam::fv::axialFlowTurbineALSource::addSup
         // Add source for tower actuator line
         tower_->addSup(rho, eqn, fieldI);
         forceField_ += tower_->forceField();
-        if (includeTowerDrag_) force_ += tower_->force();
+        if (includeTowerDrag_)
+        {
+            force_ += tower_->force();
+        }
     }
 
     if (hasNacelle_)
@@ -620,15 +745,14 @@ void Foam::fv::axialFlowTurbineALSource::addSup
         // Add source for tower actuator line
         nacelle_->addSup(rho, eqn, fieldI);
         forceField_ += nacelle_->forceField();
-        if (includeNacelleDrag_) force_ += nacelle_->force();
+        if (includeNacelleDrag_)
+        {
+            force_ += nacelle_->force();
+        }
     }
 
     // Torque is the projection of the moment from all blades on the axis
     torque_ = moment & axis_;
-    Info<< "Azimuthal angle (degrees) of " << name_ << ": " << angleDeg_
-        << endl;
-    Info<< "Torque from " << name_ << ": " << torque_
-        << endl;
 
     scalar rhoRef;
     coeffs_.lookup("rhoRef") >> rhoRef;
@@ -638,12 +762,15 @@ void Foam::fv::axialFlowTurbineALSource::addSup
     dragCoefficient_ = force_ & freeStreamDirection_
                      / (0.5*rhoRef*frontalArea_*magSqr(freeStreamVelocity_));
 
-    Info<< "Power coefficient from " << name_ << ": " << powerCoefficient_
-        << endl << endl;
+    // Print performance to terminal
+    printPerf();
 
     // Write performance data -- note this will write multiples if there are
     // multiple PIMPLE loops
-    if (Pstream::master()) writePerf();
+    if (Pstream::master())
+    {
+        writePerf();
+    }
 }
 
 
@@ -657,6 +784,12 @@ void Foam::fv::axialFlowTurbineALSource::addSup
     if (time_.value() != lastRotationTime_)
     {
         rotate();
+    }
+
+    if (endEffectsActive_ and endEffectsModel_ != "liftingLine")
+    {
+        // Calculate end effects based on current velocity field
+        calcEndEffects();
     }
 
     // Add scalar source term from blades
@@ -699,11 +832,17 @@ bool Foam::fv::axialFlowTurbineALSource::read(const dictionary& dict)
 
         // Get hub information
         hubDict_ = coeffs_.subOrEmptyDict("hub");
-        if (hubDict_.keys().size() > 0) hasHub_ = true;
+        if (hubDict_.keys().size() > 0)
+        {
+            hasHub_ = true;
+        }
 
         // Get tower information
         towerDict_ = coeffs_.subOrEmptyDict("tower");
-        if (towerDict_.keys().size() > 0) hasTower_ = true;
+        if (towerDict_.keys().size() > 0)
+        {
+            hasTower_ = true;
+        }
         includeTowerDrag_ = towerDict_.lookupOrDefault
         (
             "includeInTotalDrag",
@@ -712,12 +851,20 @@ bool Foam::fv::axialFlowTurbineALSource::read(const dictionary& dict)
 
         // Get nacelle information
         nacelleDict_ = coeffs_.subOrEmptyDict("nacelle");
-        if (nacelleDict_.keys().size() > 0) hasNacelle_ = true;
+        if (nacelleDict_.keys().size() > 0)
+        {
+            hasNacelle_ = true;
+        }
         includeNacelleDrag_ = nacelleDict_.lookupOrDefault
         (
             "includeInTotalDrag",
             false
         );
+
+        // Read end effects subdictionary
+        endEffectsDict_ = coeffs_.subOrEmptyDict("endEffects");
+        endEffectsDict_.lookup("active") >> endEffectsActive_;
+        endEffectsDict_.lookup("endEffectsModel") >> endEffectsModel_;
 
         if (debug)
         {
